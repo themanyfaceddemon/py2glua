@@ -1,9 +1,3 @@
-"""
-Блок классов необходимых для корректной работы транслятора. Базовое абстрактное дерево питона
-парсить и работать ощущается как хуйня. Легче сделать свою промежуточную структуру, чтобы уже её и оптимизировать,
-и менять.
-"""
-
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -13,86 +7,119 @@ from ..runtime import Realm
 
 
 @dataclass
-class Node:
-    """Базовый класс представления ноды промежуточных преобразований"""
+class IRNode:
+    lineno: int | None
+    col_offset: int | None
+    parent: "IRNode | None"
 
-    lineno: int | None  # Номер линии где находится нода
-    col_offset: int | None  # Её начало относительно начала строки
-
-    def walk(self) -> Iterator["Node"]:
-        """Базовый метод позволяющий обходить рекурсивно все ноды"""
+    def walk(self) -> Iterator["IRNode"]:
         raise NotImplementedError
 
 
 @dataclass
-class File(Node):
-    """Класс отвечающий за представление единичного файла"""
+class File(IRNode):
+    path: Path | None = None
+    realm: Realm | None = None
+    meta_tags: list[str] = field(default_factory=list)
+    body: list[IRNode] = field(default_factory=list)
 
-    path: Path | None = None  # Путь до файла
-    realm: Realm | None = None  # Область выполнения кода файла
-    meta_tags: list[str] = field(default_factory=list)  # Мета теги кода
-    body: list[Node] = field(default_factory=list)  # Сам код файла
-
-    def walk(self) -> Iterator[Node]:
+    def walk(self) -> Iterator[IRNode]:
         yield self
         for ch in self.body:
-            yield ch
+            yield from ch.walk()
 
 
-# region
+# region Import
 class ImportType(Enum):
     UNKNOWN = auto()
-    PYTHON_STD = auto()  # стандартная библиотека
-    EXTERNAL = auto()  # сторонние пакеты (из site-packages)
-    LOCAL = auto()  # относительный импорт внутри проекта
-    INTERNAL = auto()  # собственные IR/Runtime-модули
+    PYTHON_STD = auto()
+    EXTERNAL = auto()
+    LOCAL = auto()
+    INTERNAL = auto()
 
 
 @dataclass
-class Import(Node):
-    """Представление импорта питоновского файла"""
-
+class Import(IRNode):
     module: str | None = None
     names: list[str] = field(default_factory=list)
     aliases: list[str | None] = field(default_factory=list)
     import_type: ImportType = ImportType.UNKNOWN
 
-    def walk(self) -> Iterator[Node]:
+    def walk(self) -> Iterator[IRNode]:
         yield self
 
 
 # endregion
-@dataclass
-class Constant(Node):
-    """Класс отвечающий за представление констант"""
 
+
+# region Constants / Vars
+@dataclass
+class Constant(IRNode):
     value: int | float | str | bool | None
 
-    def walk(self) -> Iterator[Node]:
+    def walk(self) -> Iterator[IRNode]:
         yield self
 
 
-# region vars
 @dataclass
-class VarStore(Node):
-    """Класс сохранения переменной"""
-
+class VarStore(IRNode):
     name: str
-    value: Node
+    value: IRNode
 
-    def walk(self) -> Iterator[Node]:
+    def walk(self) -> Iterator[IRNode]:
         yield self
         yield from self.value.walk()
 
 
 @dataclass
-class VarLoad(Node):
-    """Класс загрузки переменной"""
-
+class VarLoad(IRNode):
     name: str
 
-    def walk(self) -> Iterator[Node]:
+    def walk(self) -> Iterator[IRNode]:
         yield self
+
+
+# endregion
+
+
+# region Binary operations
+@dataclass
+class BinOp(IRNode):
+    op: str  # "+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>", "//", "**"
+    left: IRNode
+    right: IRNode
+
+    def walk(self) -> Iterator[IRNode]:
+        yield self
+        yield from self.left.walk()
+        yield from self.right.walk()
+
+
+# endregion
+
+
+# region Functions
+@dataclass
+class Function(IRNode):
+    name: str
+    args: list[str] = field(default_factory=list)
+    decorators: list[str] = field(default_factory=list)
+    body: list[IRNode] = field(default_factory=list)
+
+    def walk(self) -> Iterator[IRNode]:
+        yield self
+        for ch in self.body:
+            yield from ch.walk()
+
+
+@dataclass
+class Return(IRNode):
+    value: IRNode | None = None
+
+    def walk(self) -> Iterator[IRNode]:
+        yield self
+        if self.value is not None:
+            yield from self.value.walk()
 
 
 # endregion
